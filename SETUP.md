@@ -45,10 +45,17 @@ So a deployment is really four steps:
 Octopus release  →  commit to Git  →  Argo CD syncs  →  pods roll
 ```
 
+**The gateway is how Octopus reaches Argo CD.** Octopus Cloud has no inbound
+route into your cluster, so a small agent — the Octopus Argo CD Gateway — runs
+alongside Argo CD and dials out to Octopus. That's what registers your instance
+under Infrastructure → Argo CD Instances and lets Octopus enumerate
+applications. Installing it is covered in
+[`argocd-octopus-gateway-setup.md`](argocd-octopus-gateway-setup.md).
+
 **The annotations are the join between the two halves.** Octopus has no idea
 what your directory structure looks like. When a deployment runs, it scans the
-Argo CD applications registered against your instance and looks for two
-annotations on each one:
+Argo CD applications the gateway reports and looks for two annotations on each
+one:
 
 ```yaml
 argo.octopus.com/project: your-project-slug
@@ -118,6 +125,9 @@ Full explanation in
 ### Repository layout
 
 ```
+argocd-octopus-gateway-setup.md   build the environment from a bare VM (start here
+                                  if you have no cluster yet)
+
 bootstrap/
   root-app.yaml              applied by hand, once — bootstraps everything else
 
@@ -131,10 +141,10 @@ single/                      scenario 1 — kustomize, hand-managed
 appset/                      scenario 3 — kustomize base + per-env overlays
   base/
   tenants/development|test|production/
-octopus-managed/             scenario 4 — written by Octopus, do not hand-edit
+octopus-managed/             scenario 5 — written by Octopus, do not hand-edit
   development|test|production/
-templates/                   scenario 4 — input templates for Octopus
-helm/demo-web/               scenario 5 — Helm chart + per-env values files
+templates/                   scenario 5 — input templates for Octopus
+helm/demo-web/               scenario 6 — Helm chart + per-env values files
 ```
 
 ### Port map
@@ -149,9 +159,22 @@ these once.
 | 30091 / 30092 / 30093 | Octopus-managed | `octopus-development` / `-test` / `-production` |
 | 30101 / 30102 / 30103 | Helm | `helm-development` / `-test` / `-production` |
 
+If you followed the gateway guide, the Argo CD UI itself is on `30443`. Nothing
+here collides with it.
+
 ---
 
 ## Part 1 — Prerequisites
+
+**Starting from nothing?** [`argocd-octopus-gateway-setup.md`](argocd-octopus-gateway-setup.md)
+in this repository walks through building the whole environment from a bare
+Ubuntu VM: k3s, Argo CD, a scoped Argo CD service account for Octopus, and the
+Octopus Argo CD Gateway that connects the two. It ends exactly where this guide
+begins — with a healthy gateway and no annotations wired up yet.
+
+Follow that first if you don't already have Argo CD registered in Octopus. The
+rest of Part 1 is for people who already have a cluster and just need to check
+it's suitable.
 
 ### Cluster
 
@@ -176,9 +199,18 @@ You need both a CRD and a running pod. If either is missing, see
 [ApplicationSet CRD missing](#applicationset-crd-missing) before continuing —
 three of the six scenarios depend on it.
 
+The gateway guide's install route — the upstream `install.yaml` — includes the
+controller, so if you followed it this check should pass. Helm chart and
+`namespace-install.yaml` routes are the ones that commonly don't.
+
 ### Octopus Deploy
 
-An Octopus instance with an Argo CD instance registered against your cluster.
+An Octopus instance with your cluster registered under **Infrastructure → Argo
+CD Instances**, connected by the Octopus Argo CD Gateway. See
+[`argocd-octopus-gateway-setup.md`](argocd-octopus-gateway-setup.md) if that
+isn't in place yet — Octopus can't see any application in your cluster until it
+is, annotations or not.
+
 You'll also need permission to create projects, environments, feeds, and Git
 credentials.
 

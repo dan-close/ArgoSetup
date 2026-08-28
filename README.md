@@ -7,22 +7,30 @@ the Octopus Deploy Argo CD integration.
 scenario, and a troubleshooting section indexed by the error message you'll
 actually see.
 
+**No cluster yet?** [argocd-octopus-gateway-setup.md](argocd-octopus-gateway-setup.md)
+builds one from a bare Ubuntu VM — k3s, Argo CD, and the Octopus Argo CD
+Gateway — and hands off to SETUP.md.
+
 ## Layout
 
 ```
+argocd-octopus-gateway-setup.md   build the environment from a bare VM
+
 bootstrap/          applied by hand once — bootstraps everything else
 argocd/             synced by root; all Application/ApplicationSet CRs
 single/             scenario 1 — kustomize, hand-managed
 appset/             scenario 3 — kustomize base + per-environment overlays
-octopus-managed/    scenario 4 — written by Octopus, do not hand-edit
-templates/          scenario 4 — input templates for Octopus
-helm/demo-web/      scenario 5 — Helm chart + per-environment values
+octopus-managed/    scenario 5 — written by Octopus, do not hand-edit
+templates/          scenario 5 — input templates for Octopus
+helm/demo-web/      scenario 6 — Helm chart + per-environment values
 ```
 
 ## Quick start
 
 ```bash
-# 1. Replace the placeholder repo URL (two occurrences per ApplicationSet)
+# 1. Replace the placeholder repo URL (two occurrences per ApplicationSet).
+#    macOS needs `sed -i ''`; PowerShell needs a different command entirely —
+#    see SETUP.md.
 sed -i 's|https://github.com/YOUR-ORG/argocd-demo-app.git|https://github.com/YOUR-ORG/YOUR-REPO.git|g' \
   argocd/*.yaml bootstrap/root-app.yaml
 
