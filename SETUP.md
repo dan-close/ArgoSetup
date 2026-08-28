@@ -29,6 +29,63 @@ the cause you'd have to guess at.
 
 Ten Argo CD applications in total, from one manual `kubectl apply`.
 
+### How Octopus and Argo CD fit together
+
+Worth getting straight before Part 4, because the two products divide the work
+in a way that isn't obvious from either UI on its own.
+
+**Argo CD is the only thing that talks to the cluster.** Octopus never applies
+a manifest. What it does is commit to Git — a new image tag, or a whole
+rendered manifest — and then ask Argo CD to sync. Argo CD does the rest, exactly
+as it would for a change you typed yourself.
+
+So a deployment is really four steps:
+
+```
+Octopus release  →  commit to Git  →  Argo CD syncs  →  pods roll
+```
+
+**The annotations are the join between the two halves.** Octopus has no idea
+what your directory structure looks like. When a deployment runs, it scans the
+Argo CD applications registered against your instance and looks for two
+annotations on each one:
+
+```yaml
+argo.octopus.com/project: your-project-slug
+argo.octopus.com/environment: development
+```
+
+An application is in scope for a deployment when **both** match — the project
+being deployed, and the environment being deployed to. That is the entire
+matching rule, and it explains most of the behaviour that surprises people:
+
+- **One project, three environments, three applications.** Deploy to Test and
+  Octopus acts on the one application annotated `test`, ignoring the others.
+  That's what makes promotion work.
+- **Two applications sharing a project and environment both get updated** in a
+  single deployment. Useful on purpose, confusing by accident — it's why each
+  scenario here gets its own project.
+- **An unannotated application is invisible to Octopus.** It isn't an error;
+  Octopus simply has nothing to act on.
+
+**Where you see this in the Octopus UI.** Two places worth opening early:
+
+| Where | What it shows |
+| --- | --- |
+| **Argo CD Applications view** (under the Argo CD instance) | Every application Octopus can see, with the project and environment it resolved from the annotations, and any outstanding configuration — missing Git credentials, for instance. This is where you confirm the annotations landed. |
+| **Deployment task log** | Which applications the step matched, what it committed, and what it skipped. A step that matched nothing still succeeds, so the log is where you find that out. |
+
+The Applications view is the one to check first whenever something doesn't
+behave. If an application isn't listed there, no amount of deployment-process
+configuration will make it work — the annotation is wrong, or Octopus hasn't
+refreshed yet.
+
+**Two things to know about that view.** It caches, so a newly annotated
+application can take a minute to appear; a failed verification that then
+succeeds unchanged is usually just the cache catching up. And it lists
+applications from the whole Argo CD instance, not just yours — so scenarios
+1–3 will show up unannotated and unclaimed, which is correct.
+
 ### How much Octopus do I need?
 
 **Three environments, one lifecycle, and three projects** — all sharing the
@@ -52,11 +109,11 @@ worked example of the image-tag step — see
 [Single application](#1-single-application). It stays outside Octopus unless
 you choose to annotate it.
 
-**Why scenarios 4–6 can't share one project** is explained in
-[One Octopus project per scenario](#one-octopus-project-per-scenario). The
-short version: the Helm scenario requires a step setting the others must not
-have, and a shared project slug would make one deployment update every
-scenario at once.
+**Why scenarios 4–6 can't share one project** follows from the matching rule
+above: a shared project slug would make one deployment update every scenario at
+once. The Helm scenario also requires a step setting the others must not have.
+Full explanation in
+[One Octopus project per scenario](#one-octopus-project-per-scenario).
 
 ### Repository layout
 
@@ -170,12 +227,43 @@ on the template. Missing the second one is easy and fails in a confusing way:
 the ApplicationSet generates apps successfully, then every generated app
 errors on repository access.
 
-**Linux, macOS, or WSL:**
+In every command below, the **first** URL is the placeholder being replaced and
+the **second** is your repository. Reversing them is easy to do and puts the
+placeholder back into files you'd already fixed.
+
+**Linux or WSL (GNU sed):**
 
 ```bash
 sed -i 's|https://github.com/YOUR-ORG/argocd-demo-app.git|https://github.com/YOUR-ORG/YOUR-REPO.git|g' \
   argocd/*.yaml bootstrap/root-app.yaml
 grep -rn "YOUR-ORG" . || echo "all clear"
+```
+
+**macOS (BSD sed):**
+
+macOS ships BSD sed, where `-i` requires a backup-suffix argument. Pass an
+empty string for no backup — note the space between `-i` and `''`:
+
+```bash
+sed -i '' 's|https://github.com/YOUR-ORG/argocd-demo-app.git|https://github.com/YOUR-ORG/YOUR-REPO.git|g' \
+  argocd/*.yaml bootstrap/root-app.yaml
+grep -rn "YOUR-ORG" . || echo "all clear"
+```
+
+Without the `''`, BSD sed reads the next argument as the backup suffix and then
+tries to parse your first filename as the script, giving:
+
+```
+sed: 1: "argocd/application.yaml
+": command a expects \ followed by text
+```
+
+If you'd rather not think about the difference, `perl` behaves the same on both
+platforms:
+
+```bash
+perl -pi -e 's|\Qhttps://github.com/YOUR-ORG/argocd-demo-app.git\E|https://github.com/YOUR-ORG/YOUR-REPO.git|g' \
+  argocd/*.yaml bootstrap/root-app.yaml
 ```
 
 **Windows PowerShell:**
@@ -344,8 +432,13 @@ story you're demonstrating.
 
 ### Scoping annotations
 
-Octopus finds Argo CD applications by two annotations. Values are **slugs, not
-display names** — check the slug field on the project and environment pages.
+The matching rule is covered in
+[How Octopus and Argo CD fit together](#how-octopus-and-argo-cd-fit-together);
+this is where to put the annotations in practice.
+
+Values are **slugs, not display names** — check the slug field on the project
+and environment pages. A display name of "Development" is usually the slug
+`development`, but confirm rather than assume.
 
 ```yaml
 argo.octopus.com/project: your-project-slug
@@ -377,6 +470,18 @@ element name, so all three environments are handled by one block:
 
 You only need to set the project slug. Set it once per ApplicationSet — each
 scenario should be its own Octopus project (see below).
+
+**Verify before moving on.** Commit, let `root` sync, then check the annotation
+reached the generated applications rather than just the ApplicationSet:
+
+```bash
+kubectl get application demo-development -n argocd \
+  -o jsonpath='{.metadata.annotations}'
+```
+
+Then open the **Argo CD Applications view** in Octopus. The applications should
+be listed with their resolved project and environment. If they aren't, give it
+a minute for the cache and refresh before assuming the annotation is wrong.
 
 ### One Octopus project per scenario
 
@@ -480,9 +585,31 @@ That's what removes the manual `kubectl apply` from everything else. Adding a
 scenario later means committing a file to `argocd/` — `root` notices and
 creates the Application for you.
 
-**The demo.** Edit an annotation value in `argocd/application.yaml` on GitHub
-and commit. Within a minute `root` picks it up and updates the `argocd-demo`
-Application object in the cluster. Nobody ran a command.
+**The demo.** Add an annotation to `argocd/application.yaml` on GitHub. The file
+ships with no `annotations:` block on the Application, so you're adding one
+rather than changing an existing value. Any harmless key will do:
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: argocd-demo
+  namespace: argocd
+  annotations:
+    demo.example.com/touched-by: app-of-apps    # <- add these two lines
+spec:
+  ...
+```
+
+Commit it. Within a minute `root` picks it up and adds that annotation to the
+`argocd-demo` Application object in the cluster. Nobody ran a command.
+
+Repeat the demo by changing the value — `app-of-apps-2` — and the same thing
+happens for an edit rather than an addition.
+
+Note the commented-out `argo.octopus.com/*` block already in that file is for a
+different purpose (scenario 4); leave it alone for this demo, since uncommenting
+it brings the app into scope for Octopus deployments.
 
 **What you should and shouldn't see.** This is the part worth being explicit
 about, because a successful run looks like almost nothing happening:
@@ -500,8 +627,8 @@ about, because a successful run looks like almost nothing happening:
   **the running pods do not restart**. The page at
   `http://localhost:30080` is unchanged.
 
-That last point is correct behaviour, not a failed deployment. You changed
-metadata on the Application resource, not anything in `single/` — so the
+That last point is correct behaviour, not a failed deployment. You added
+metadata to the Application resource, not anything in `single/` — so the
 manifests Argo CD renders for the workload are byte-for-byte identical and
 there is nothing to roll. If pods *had* restarted, that would be the surprising
 outcome.
@@ -568,9 +695,11 @@ image tag, which are per-tenant values by design.
 
 Uses the ApplicationSet applications from scenario 3.
 
-**Octopus setup:** a project on your three-phase lifecycle, with a single
-*Update Argo CD Application Image Tags* step and an nginx package reference
-from your Docker Hub feed.
+**Octopus setup: the first of your three projects.** Create it on the
+three-phase lifecycle from Part 4, with a single *Update Argo CD Application
+Image Tags* step and an nginx package reference from your Docker Hub feed. Put
+its slug in the `argo.octopus.com/project` annotation in
+`argocd/applicationset.yaml`.
 
 - **No deployment targets needed.** The step runs on the Octopus Server and
   finds its work by annotation. If it's asking for a target role, something is
@@ -609,7 +738,13 @@ Octopus adds on top of Argo CD.
 Octopus renders `templates/app.yaml` with Octopus variables substituted and
 commits the result into `octopus-managed/<env>/`.
 
-**Octopus setup:** a project with an *Update Argo CD Application Manifests*
+**Octopus setup: a second project**, separate from scenario 4's. It uses a
+different step, so there's nothing to share. The environments, lifecycle, and
+Git credentials are the same ones you already created; put this project's slug
+in the `argo.octopus.com/project` annotation in
+`argocd/applicationset-octopus.yaml`.
+
+Add an *Update Argo CD Application Manifests*
 step. Template source is this repository, branch `main`, folder `templates`.
 Enable **purge** so removed resources are removed from the target directory.
 
@@ -652,17 +787,35 @@ the release number is rendered in 5rem type on the page.
 A chart at `helm/demo-web/` with a values file per environment. This is the
 scenario where the Octopus integration genuinely behaves differently.
 
-**The one setting that matters:** on the *Update Argo CD Application Image
-Tags* step, open the nginx package reference and populate the **Helm image
-value** field:
+**Octopus setup: a third project, built the same way as scenario 4.** This
+isn't a variation on the project you already made — it's a new one, because the
+step needs a setting scenario 4's project must not have. Everything else is
+identical, and the environments, lifecycle, feed, and Git credentials are
+shared, so there's nothing new to create in Library.
+
+Set it up exactly as in [scenario 4](#4-octopus-image-tag-promotion):
+
+- A new project on the same three-phase lifecycle.
+- One *Update Argo CD Application Image Tags* step, no deployment targets, no
+  environment scoping on the step.
+- An nginx package reference from the same Docker Hub feed.
+- The project's slug in the `argo.octopus.com/project` annotation in
+  `argocd/applicationset-helm.yaml` — not the slug you used for scenario 4.
+
+**Then the one setting that differs:** on the step, open the nginx package
+reference and populate the **Helm image value** field:
 
 ```
 image.tag
 ```
 
 This field is required for Helm sources and must be left empty for Kustomize
-and directory sources. Without it the deployment succeeds while doing nothing,
-logging a warning about a missing image replace path annotation.
+and directory sources — which is exactly why this can't share scenario 4's
+project. Without it the deployment succeeds while doing nothing, logging a
+warning about a missing image replace path annotation.
+
+Release versioning, promotion, and the optional Production manual-intervention
+step all work as they do in scenario 4.
 
 **`values.yaml` has no `tag` key on purpose.** The image path is defined per
 chart, not per values file, so Octopus updates `image.tag` wherever it finds it
@@ -863,6 +1016,6 @@ namespace. Check the [port map](#port-map).
 
 ## Notes on the images used
 
-`nginx:1.27-alpine` runs as root. That's fine for a demo cluster, but if your
+The `nginx` image runs as root. That's fine for a demo cluster, but if your
 namespaces have restrictive Pod Security admission, swap to
 `nginxinc/nginx-unprivileged` and change `containerPort` to `8080`.
