@@ -63,7 +63,7 @@ You want both a CRD and a running pod.
 
 ## 3. Expose the ArgoCD UI permanently
 
-By default the `argocd-server` service is `ClusterIP` only. For repeat access without re-running `kubectl port-forward` every time, switch it to `NodePort`:
+By default, the `argocd-server` service is `ClusterIP` only. For repeat access without re-running `kubectl port-forward` every time, switch it to `NodePort`:
 
 Switch the type and pin a fixed port in one command — a random port gets reassigned if the service is ever recreated:
 
@@ -80,7 +80,7 @@ kubectl get svc argocd-server -n argocd
 
 You should see `NodePort` and `443:30443/TCP`.
 
-If ufw is enabled, open the port. The second range covers the demo applications in [SETUP.md](SETUP.md), so you won't have to come back for it:
+If UFW is enabled, open the port. The second range covers the demo applications in [SETUP.md](SETUP.md), so you won't have to come back for it:
 
 ```bash
 sudo ufw allow 30443/tcp
@@ -216,7 +216,7 @@ Three causes account for most failures:
 
 - **Self-signed certificate.** A fresh ArgoCD install uses one, and without `--set gateway.argocd.insecure="true"` the gateway can't complete the TLS handshake to the ArgoCD API. The logs mention certificate validation.
 - **Bad or insufficient token.** Re-run the `can-i` checks from step 5. A token that reads clusters but not applications produces a gateway that starts cleanly and then reports nothing.
-- **Outbound 8443 blocked.** The gateway needs the Octopus gRPC endpoint as well as HTTPS on 443. Corporate networks and VPNs block 8443 more often than 443, and the symptom is a gateway that looks healthy in the cluster while Octopus never sees it.
+- **Outbound 8443 blocked.** The gateway needs the Octopus gRPC endpoint as well as HTTPS on 443. Corporate networks and VPNs block 8443 more often than 443, and the symptom is a gateway that looks healthy in the cluster, while Octopus never sees it.
 
 The pod restarting in a loop points at the first two; a running pod with nothing appearing in Octopus points at the third.
 
