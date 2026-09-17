@@ -8,11 +8,94 @@ visible.
 The first three are Argo CD only — no Octopus involvement at all. The last
 three each need **their own Octopus project**, so three projects in total.
 
-Read [Part 1](#part-1--prerequisites) through [Part 4](#part-4--octopus-setup)
-in order the first time. After that, the
-[troubleshooting section](#troubleshooting) is the part worth bookmarking — it
-lists some problems I hit, with the symptom you'll see rather than
-the cause you'd have to guess at.
+---
+
+## How to use this guide
+
+**If you already know Argo CD and Octopus:** Parts 1–4 in order, then pick
+whichever scenarios interest you. Skip the next section.
+
+**If either product is new to you:** don't try to do everything in one sitting.
+The guide is written so you can stop at three natural points, and each one
+leaves you with something that works.
+
+| Stop after | You'll have | Roughly |
+| --- | --- | --- |
+| **Part 3** | Argo CD running your applications from Git. No Octopus yet. | 30–45 min |
+| **Scenario 1** | A working demo you can change and re-sync by hand. | +15 min |
+| **Part 4 + scenario 4** | Octopus promoting a release through three environments. | +45–60 min |
+
+Scenarios 2, 3, 5, and 6 build on that and can wait for another day. Nothing
+later in the guide breaks because you haven't done them.
+
+**Two things that trip people up early**, worth knowing before you start:
+
+- **Run every command from the root of your repository clone**, on a machine
+  where `kubectl` talks to your cluster. Most commands use relative paths, so
+  running them from the wrong directory gives a confusing "file not found"
+  errors rather than anything obviously about directories.
+- **Part 4 is not all of the Octopus setup.** It covers what the Octopus
+  scenarios *share* — environments, a lifecycle, a feed, credentials. Each of
+  scenarios 4, 5, and 6 then creates its own project. If you finish Part 4 and
+  feel like something's missing, that's why.
+
+When something doesn't work, go to [Troubleshooting](#troubleshooting) before
+re-reading the step. It's indexed by the error message or symptom you'll
+actually see, and most entries are problems we hit ourselves.
+
+---
+
+## Vocabulary
+
+Skip this if both products are familiar. These are the terms the guide uses
+without stopping to explain them.
+
+### Argo CD
+
+| Term | What it means here |
+| --- | --- |
+| **Manifest** | A YAML file describing a Kubernetes object — a Deployment, a Service, a ConfigMap. |
+| **Application** | Argo CD's unit of work: "keep the cluster matching *this* folder in *this* Git repo." Confusingly, it's also a Kubernetes object in its own right, which is what makes the app-of-apps scenario possible. |
+| **ApplicationSet** | A generator that produces many Applications from one template — one per Git directory, in our case. |
+| **Sync** | Applying what's in Git to the cluster. Manual here by default, so you can watch it happen. |
+| **Synced/OutOfSync** | Indicates whether the cluster currently matches Git. `OutOfSync` is normal and expected after a commit — it's not an error. |
+| **Healthy / Progressing / Missing** | Whether the workload is actually running. `Missing` means the resources haven't been created yet, usually because nothing has synced. |
+| **Drift** | The cluster differs from Git because someone changed it directly. |
+| **Self-heal** | Argo CD automatically undoes drift. |
+| **Prune** | Deleting cluster resources when their manifests disappear from Git. Off by default here. |
+| **CRD** | Custom Resource Definition — the schema that teaches Kubernetes about a new object type. Argo CD ships CRDs for Application and ApplicationSet. |
+| **NodePort** | A way of exposing a Service on a fixed port of the cluster node, so `http://localhost:30080` works. Used here because it survives pod restarts. |
+
+### Kustomize and Helm
+
+Two ways of templating Kubernetes manifests. Scenarios 1 and 3 use kustomize;
+scenario 6 uses Helm. You don't need to be fluent in either.
+
+| Term | What it means here |
+| --- | --- |
+| **kustomize base** | A folder of shared manifests that other folders build on. |
+| **overlay** | A folder that references a base and modifies it — different replica count, different image tag. |
+| **transformer** | The mechanism an overlay uses to modify the base: `images:`, `replicas:`, `patches:`. **A base value that a transformer overrides is invisible in the final output**, which catches people out. |
+| **configMapGenerator** | Builds a ConfigMap from a file and appends a hash of its contents to the name. That hash is what makes pods restart when the file changes. |
+| **Helm chart** | A package of templated manifests, configured by values files. |
+| **values file** | The settings a chart renders with. One per environment here. |
+
+### Octopus
+
+| Term | What it means here |
+| --- | --- |
+| **Project** | A deployment process plus its variables. You'll create three. |
+| **Environment** | Development, Test, Production. Shared across all three projects. |
+| **Lifecycle** | The order environments are promoted through, and what gates each hop. |
+| **Release** | A frozen snapshot of the process, variables, and package versions. Created once, then promoted. |
+| **Deployment** | Running a release against one environment. |
+| **Promotion** | Deploying the *same* release to the next environment. This is the core idea Octopus adds on top of Argo CD. |
+| **Step** | One action in a deployment process. We use two, both Argo CD-specific. |
+| **Package reference** | A step's link to an artifact — the nginx container image here. It's what gives a release something to version. |
+| **Feed** | Where packages come from. Docker Hub in this guide. |
+| **Slug** | The URL-safe short name of a project or environment — `development`, not "Development". **The annotations need slugs, not display names.** |
+| **Gateway** | The agent running in your cluster that lets Octopus Cloud see Argo CD. Installed by the [gateway guide](argocd-octopus-gateway-setup.md). |
+| **Annotation** | A key/value label on an Argo CD Application. Two specific annotations tell Octopus which project and environment an Application belongs to. |
 
 ---
 
@@ -54,7 +137,7 @@ applications. Installing it is covered in
 
 **The annotations are the join between the two halves.** Octopus has no idea
 what your directory structure looks like. When a deployment runs, it scans the
-Argo CD applications the gateway reports and looks for two annotations on each
+Argo CD applications, the gateway reports, and looks for two annotations on each
 one:
 
 ```yaml
@@ -334,6 +417,15 @@ error rather than anything obviously auth-related.
 
 ---
 
+**Checkpoint — before Part 3.** You should have:
+
+- A repository on GitHub containing this guide's folders at the top level.
+- A local clone you're working in.
+- No `YOUR-ORG` left in `argocd/` or `bootstrap/` (`grep -rn "YOUR-ORG" .`).
+- Nothing applied to the cluster yet — that's Part 3.
+
+---
+
 ## Part 3 — Bootstrap with app of apps
 
 This is the only manual `kubectl apply` in the whole setup. Everything else
@@ -432,6 +524,24 @@ Two consequences worth knowing:
   whether you want deletions to cascade — and if you do, add
   `finalizers: [resources-finalizer.argocd.argoproj.io]` to the child
   applications, or you'll get workloads running that no Application claims.
+
+---
+
+**Checkpoint — before Part 4.** Run `kubectl get applications -n argocd`. You
+should see ten applications: `root`, `argocd-demo`, three `demo-*`, three
+`helm-*`, and three `octopus-*`.
+
+- **Fewer than ten, or none at all** — `root` hasn't synced, or the
+  ApplicationSet controller is missing. See
+  [ApplicationSet CRD missing](#applicationset-crd-missing).
+- **All showing `Missing`** — correct at this stage. They're generated but not
+  synced. Sync them as described above.
+- **`Unknown` with a repository error** — the repository URL is wrong, or it's
+  private and Argo CD has no credentials.
+
+Once `argocd-demo` is `Synced` and `Healthy` and
+`http://localhost:30080` loads, Argo CD is fully working. **Everything from
+here is optional**, and scenarios 1–3 need nothing further.
 
 ---
 
@@ -542,12 +652,42 @@ Two reasons they can't be one project:
 
 ---
 
+**Checkpoint — before the Octopus scenarios.** You should have, in Octopus:
+
+- Three environments and a three-phase lifecycle.
+- A Docker Hub feed and a Git credential with **write** access.
+- Your applications are listed in the **Argo CD Applications view**, each showing
+  the project and environment resolved from its annotations.
+
+**No projects yet** — that's deliberate. Each of scenarios 4, 5, and 6 creates
+it's own, and tells you how.
+
+If the Applications view is empty or the applications show no environment,
+stop here and fix it. Every Octopus scenario depends on that matching working,
+and the symptoms further on are much harder to read.
+
+---
+
 ## The scenarios
 
 Every scenario's page is reachable at `http://localhost:<port>` from the
 machine running the cluster — see the [port map](#port-map) for the full list.
 Each section below repeats its own ports. If a page won't load, check the
 NodePort caveat in [Part 1](#cluster).
+
+**Suggested order.** Scenario 1 is the one to do first — it's the smallest
+complete loop, and everything else is a variation on it. Scenario 4 is the one
+to do next if you want the Octopus story; it reuses the applications scenario 3
+already created. The rest are independent of each other.
+
+| Scenario | Needs | Difficulty |
+| --- | --- | --- |
+| 1. Single application | Part 3 | Start here |
+| 2. App of apps | Part 3 | Easy — nothing to build |
+| 3. ApplicationSet | Part 3 | Easy |
+| 4. Octopus image tags | Part 4 + scenario 3 | Moderate |
+| 5. Octopus manifests | Part 4 | Moderate |
+| 6. Helm | Part 4 | Moderate — most configuration |
 
 ### 1. Single application
 
@@ -556,8 +696,22 @@ NodePort caveat in [Part 1](#cluster).
 Plain kustomize, manually synced. The page is served from a ConfigMap
 generated from `single/files/index.html`.
 
-**Demo loop:** edit the release string and color at the top of the HTML file,
-commit, refresh in the Argo CD UI, sync, reload the browser tab.
+**Demo loop**, in full, since this is the pattern every other scenario repeats:
+
+1. Edit `single/files/index.html`. Change `--release: "v1"` to `"v2"` and
+   `--band` to a different color — both are at the top of the `<style>` block,
+   marked with a comment.
+2. Commit and push.
+3. In the Argo CD UI, open the `argocd-demo` application and click **Refresh**.
+   It flips to `OutOfSync`. (Without clicking, it takes up to three minutes to
+   notice on its own.)
+4. Click **App Diff** to see what changed — a new ConfigMap name beside the old
+   one.
+5. Click **Sync**, then **Synchronize** to confirm.
+6. Reload `http://localhost:30080`. New color, new version.
+
+Steps 3 and 5 are manual on purpose. Automated sync would do both for you, but
+then there's nothing to see.
 
 Other changes worth showing:
 
@@ -656,7 +810,7 @@ about, because a successful run looks like almost nothing happening:
   ```
 
 - **The `argocd-demo` application itself stays `Synced` and `Healthy`**, and
-  **the running pods do not restart**. The page at
+  **The running pods do not restart**. The page at
   `http://localhost:30080` is unchanged.
 
 That last point is correct behavior, not a failed deployment. You added
@@ -688,10 +842,10 @@ Three demos, different in kind:
    `demo-test` goes `OutOfSync`.
 2. **Change the base.** Edit the `resources` block in
    `appset/base/deployment.yaml` — bump the memory limit from `64Mi` to
-   `128Mi`, say. All three tenants go `OutOfSync` at once and every pod rolls.
+   `128Mi`, say. All three tenants go `OutOfSync` at once, and every pod rolls.
    This fan-out is the argument for ApplicationSets.
 3. **Add or remove a tenant.** Copy a tenant directory, commit, and a fourth
-   application appears on its own with its own namespace. Delete it and it goes
+   application appears on its own with its own namespace. Delete it, and it goes
    away. Nothing in scenario 1 can do this.
 
 **Pick your base edit carefully — three fields are overridden per tenant.**
@@ -842,7 +996,7 @@ image.tag
 ```
 
 This field is required for Helm sources and must be left empty for Kustomize
-and directory sources, which is exactly why this can't share scenario 4's
+and directory sources — which is exactly why this can't share scenario 4's
 project. Without it, the deployment succeeds while doing nothing, logging a
 warning about a missing image replace path annotation.
 
@@ -865,7 +1019,7 @@ image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.App
 kustomize ConfigMap hash — when the rendered ConfigMap changes, the checksum
 changes, the pod spec changes, and the Deployment rolls.
 
-**`releaseName` is set per environment.** Without it Argo CD uses the
+**`releaseName` is set per environment.** Without it, Argo CD uses the
 Application name as the Helm release name, which surprises people who then
 can't find it.
 
@@ -904,7 +1058,7 @@ kubectl rollout restart deployment argocd-applicationset-controller -n argocd
 limit that client-side apply uses.
 
 If the controller *deployment* doesn't exist either, re-apply the full install
-manifest for your version. Note it will reassert ownership of resources like
+manifest for your version. Note, it will reassert ownership of resources like
 `argocd-cm`, so diff first if your install is customized.
 
 **After fixing:** the CRD alone is enough for `kubectl apply` to succeed. An
@@ -955,7 +1109,7 @@ avoid updating images from other registries:
 argo.octopus.com/image-replace-paths: "docker.io/{{ .Values.image.repository }}:{{ .Values.image.tag }}"
 ```
 
-Putting `image.tag` in the annotation silently fails to match. Also: if any
+Putting `image.tag` in the annotation silently fails to match. Also, if any
 package in a step uses annotations, all of them must.
 
 ### Page shows the old version after a successful sync
