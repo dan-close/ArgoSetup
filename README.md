@@ -5,7 +5,9 @@ the Octopus Deploy Argo CD integration.
 
 **Start with [SETUP.md](SETUP.md).** It covers prerequisites, bootstrap, each
 scenario, and a troubleshooting section indexed by the error message you'll
-actually see.
+actually see. New to either product? Its opening sections include a vocabulary
+list and suggested stopping points — you don't have to do all six scenarios in
+one go.
 
 **No cluster yet?** [argocd-octopus-gateway-setup.md](argocd-octopus-gateway-setup.md)
 builds one from a bare Ubuntu VM — k3s, Argo CD, and the Octopus Argo CD
